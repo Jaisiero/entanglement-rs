@@ -3,12 +3,13 @@ use std::sync::Arc;
 
 use entanglement_sys::*;
 use crate::error::{check_err, EntResult};
-use crate::server::EntPacketHeader;
+use crate::server::{EntEndpoint, EntPacketHeader, EntCongestionInfo, EntLostPacketInfo, SpawnConfig};
 
 // ── Low-level client wrapper ──
 
 pub struct EntClient {
     inner: *mut ent_client_t,
+    _callbacks: std::sync::Mutex<Vec<Box<dyn std::any::Any + Send + Sync>>>,
 }
 
 unsafe impl Send for EntClient {}
@@ -19,8 +20,12 @@ impl EntClient {
         let c_addr = CString::new(server_address).expect("invalid server address");
         let inner = unsafe { ent_client_create(c_addr.as_ptr(), server_port) };
         assert!(!inner.is_null(), "ent_client_create returned null");
-        EntClient { inner }
+        EntClient { inner, _callbacks: std::sync::Mutex::new(Vec::new()) }
     }
+
+
+    /// Raw C pointer for direct FFI calls from callbacks.
+    pub fn raw_handle(&self) -> *mut ent_client_t { self.inner }
 
     pub fn connect(&self) -> EntResult<()> {
         check_err(unsafe { ent_client_connect(self.inner) })?;
@@ -83,6 +88,165 @@ impl EntClient {
     pub fn local_port(&self) -> u16 {
         unsafe { ent_client_local_port(self.inner) }
     }
+
+    // ── Closure-based callback setters ──
+
+    pub fn set_on_data_received<F>(&self, callback: F)
+    where F: Fn(&EntPacketHeader, &[u8]) + Send + Sync + 'static
+    {
+        let raw = Box::into_raw(Box::new(
+            Box::new(callback) as Box<dyn Fn(&EntPacketHeader, &[u8]) + Send + Sync>
+        ));
+        unsafe { ent_client_set_on_data_received(self.inner, Some(cli_data_cb), raw as *mut _); }
+        self._callbacks.lock().unwrap().push(unsafe { Box::from_raw(raw) });
+    }
+
+    pub fn set_on_connected<F>(&self, callback: F)
+    where F: Fn() + Send + Sync + 'static
+    {
+        let raw = Box::into_raw(Box::new(
+            Box::new(callback) as Box<dyn Fn() + Send + Sync>
+        ));
+        unsafe { ent_client_set_on_connected(self.inner, Some(cli_connected_cb), raw as *mut _); }
+        self._callbacks.lock().unwrap().push(unsafe { Box::from_raw(raw) });
+    }
+
+    pub fn set_on_disconnected<F>(&self, callback: F)
+    where F: Fn() + Send + Sync + 'static
+    {
+        let raw = Box::into_raw(Box::new(
+            Box::new(callback) as Box<dyn Fn() + Send + Sync>
+        ));
+        unsafe { ent_client_set_on_disconnected(self.inner, Some(cli_disconnected_cb), raw as *mut _); }
+        self._callbacks.lock().unwrap().push(unsafe { Box::from_raw(raw) });
+    }
+
+    pub fn set_on_packet_lost<F>(&self, callback: F)
+    where F: Fn(&EntLostPacketInfo) + Send + Sync + 'static
+    {
+        let raw = Box::into_raw(Box::new(
+            Box::new(callback) as Box<dyn Fn(&EntLostPacketInfo) + Send + Sync>
+        ));
+        unsafe { ent_client_set_on_packet_lost(self.inner, Some(cli_lost_cb), raw as *mut _); }
+        self._callbacks.lock().unwrap().push(unsafe { Box::from_raw(raw) });
+    }
+
+    // ── Additional methods ──
+
+    pub fn congestion(&self) -> EntCongestionInfo {
+        unsafe { ent_client_congestion(self.inner) }.into()
+    }
+
+    pub fn send_fragment(
+        &self, msg_id: u32, frag_idx: u8, frag_count: u8,
+        data: &[u8], flags: u8, channel_id: u8,
+    ) -> EntResult<()> {
+        check_err(unsafe {
+            ent_client_send_fragment(
+                self.inner, msg_id, frag_idx, frag_count,
+                data.as_ptr() as *const std::ffi::c_void, data.len(),
+                flags, channel_id,
+            )
+        })?;
+        Ok(())
+    }
+
+    pub fn is_fragment_throttled(&self) -> bool {
+        unsafe { ent_client_is_fragment_throttled(self.inner) != 0 }
+    }
+
+    pub fn set_reassembly_timeout(&self, timeout_us: i64) {
+        unsafe { ent_client_set_reassembly_timeout(self.inner, timeout_us) }
+    }
+    // ── Fragment reassembly callback setters ──
+
+    pub fn set_on_allocate_message<F>(&self, callback: F)
+    where F: Fn(EntEndpoint, u32, u8, u8, usize) -> *mut u8 + Send + Sync + 'static
+    {
+        let raw = Box::into_raw(Box::new(
+            Box::new(callback) as Box<dyn Fn(EntEndpoint, u32, u8, u8, usize) -> *mut u8 + Send + Sync>
+        ));
+        unsafe { ent_client_set_on_allocate_message(self.inner, Some(cli_alloc_msg_cb), raw as *mut _); }
+        self._callbacks.lock().unwrap().push(unsafe { Box::from_raw(raw) });
+    }
+
+    pub fn set_on_message_complete<F>(&self, callback: F)
+    where F: Fn(EntEndpoint, u32, u8, *mut u8, usize) + Send + Sync + 'static
+    {
+        let raw = Box::into_raw(Box::new(
+            Box::new(callback) as Box<dyn Fn(EntEndpoint, u32, u8, *mut u8, usize) + Send + Sync>
+        ));
+        unsafe { ent_client_set_on_message_complete(self.inner, Some(cli_msg_complete_cb), raw as *mut _); }
+        self._callbacks.lock().unwrap().push(unsafe { Box::from_raw(raw) });
+    }
+
+    pub fn set_on_message_failed<F>(&self, callback: F)
+    where F: Fn(EntEndpoint, u32, u8, *mut u8) + Send + Sync + 'static
+    {
+        let raw = Box::into_raw(Box::new(
+            Box::new(callback) as Box<dyn Fn(EntEndpoint, u32, u8, *mut u8) + Send + Sync>
+        ));
+        unsafe { ent_client_set_on_message_failed(self.inner, Some(cli_msg_failed_cb), raw as *mut _); }
+        self._callbacks.lock().unwrap().push(unsafe { Box::from_raw(raw) });
+    }
+
+}
+
+// ── Closure callback trampolines (client) ──
+
+unsafe extern "C" fn cli_data_cb(
+    header: *const ent_packet_header, payload: *const u8,
+    payload_size: usize, user_data: *mut std::ffi::c_void,
+) {
+    let cb = &**(user_data as *const Box<dyn Fn(&EntPacketHeader, &[u8]) + Send + Sync>);
+    let hdr = EntPacketHeader::from(&*header);
+    let data = std::slice::from_raw_parts(payload, payload_size);
+    cb(&hdr, data);
+}
+
+unsafe extern "C" fn cli_connected_cb(user_data: *mut std::ffi::c_void) {
+    let cb = &**(user_data as *const Box<dyn Fn() + Send + Sync>);
+    cb();
+}
+
+unsafe extern "C" fn cli_disconnected_cb(user_data: *mut std::ffi::c_void) {
+    let cb = &**(user_data as *const Box<dyn Fn() + Send + Sync>);
+    cb();
+}
+
+unsafe extern "C" fn cli_lost_cb(
+    info: *const ent_lost_packet_info, user_data: *mut std::ffi::c_void,
+) {
+    let cb = &**(user_data as *const Box<dyn Fn(&EntLostPacketInfo) + Send + Sync>);
+    let li = EntLostPacketInfo::from(&*info);
+    cb(&li);
+}
+
+
+
+unsafe extern "C" fn cli_alloc_msg_cb(
+    sender: ent_endpoint, msg_id: u32, ch_id: u8,
+    frag_count: u8, max_size: usize, user_data: *mut std::ffi::c_void,
+) -> *mut u8 {
+    let cb = &**(user_data as *const Box<dyn Fn(EntEndpoint, u32, u8, u8, usize) -> *mut u8 + Send + Sync>);
+    cb(sender.into(), msg_id, ch_id, frag_count, max_size)
+}
+
+unsafe extern "C" fn cli_msg_complete_cb(
+    sender: ent_endpoint, msg_id: u32, ch_id: u8,
+    data: *mut u8, total_size: usize, user_data: *mut std::ffi::c_void,
+) {
+    let cb = &**(user_data as *const Box<dyn Fn(EntEndpoint, u32, u8, *mut u8, usize) + Send + Sync>);
+    cb(sender.into(), msg_id, ch_id, data, total_size)
+}
+
+unsafe extern "C" fn cli_msg_failed_cb(
+    sender: ent_endpoint, msg_id: u32, ch_id: u8,
+    app_buffer: *mut u8, _reason: ent_message_fail_reason,
+    _recv_count: u8, _frag_count: u8, user_data: *mut std::ffi::c_void,
+) {
+    let cb = &**(user_data as *const Box<dyn Fn(EntEndpoint, u32, u8, *mut u8) + Send + Sync>);
+    cb(sender.into(), msg_id, ch_id, app_buffer)
 }
 
 impl Drop for EntClient {
@@ -147,11 +311,20 @@ pub fn spawn_client(
     server_address: &str,
     server_port: u16,
 ) -> EntClientHandle {
-    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<ClientCommand>(1024);
-    let (evt_tx, evt_rx) = tokio::sync::mpsc::channel::<ClientEvent>(1024);
+    spawn_client_with_config(server_address, server_port, SpawnConfig::default())
+}
+
+pub fn spawn_client_with_config(
+    server_address: &str,
+    server_port: u16,
+    config: SpawnConfig,
+) -> EntClientHandle {
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<ClientCommand>(config.channel_buffer);
+    let (evt_tx, evt_rx) = tokio::sync::mpsc::channel::<ClientEvent>(config.channel_buffer);
     let addr = server_address.to_string();
 
     std::thread::spawn(move || {
+        let _ = &config; // moved into closure
         let client = EntClient::new(&addr, server_port);
         client.register_default_channels();
 
@@ -187,9 +360,9 @@ pub fn spawn_client(
                 }
             }
 
-            client.poll(256);
+            client.poll(config.poll_batch);
             client.update();
-            std::thread::sleep(std::time::Duration::from_millis(33));
+            std::thread::sleep(config.tick_interval);
         }
     });
 
