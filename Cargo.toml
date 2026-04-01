@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "entanglement-sys",
+    "entanglement-rs",
+]
+resolver = "2"

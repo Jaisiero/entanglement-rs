@@ -1,0 +1,3 @@
+[submodule "deps/Entanglement"]
+	path = deps/Entanglement
+	url = https://github.com/Jaisiero/Entanglement.git
