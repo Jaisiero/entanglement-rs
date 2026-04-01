@@ -47,6 +47,7 @@ pub struct EntPacketHeader {
     pub flags: u8,
     pub shard_id: u16,
     pub channel_id: u8,
+    pub reserved: u8,
     pub sequence: u64,
     pub ack: u64,
     pub ack_bitmap: u32,
@@ -62,11 +63,31 @@ impl From<&ent_packet_header> for EntPacketHeader {
             flags: h.flags,
             shard_id: h.shard_id,
             channel_id: h.channel_id,
+            reserved: h.reserved,
             sequence: h.sequence,
             ack: h.ack,
             ack_bitmap: h.ack_bitmap,
             channel_sequence: h.channel_sequence,
             payload_size: h.payload_size,
+        }
+    }
+}
+
+impl EntPacketHeader {
+    /// Convert to raw FFI header for send_raw calls.
+    pub fn to_raw(&self) -> ent_packet_header {
+        ent_packet_header {
+            magic: self.magic,
+            version: self.version,
+            flags: self.flags,
+            shard_id: self.shard_id,
+            channel_id: self.channel_id,
+            reserved: self.reserved,
+            sequence: self.sequence,
+            ack: self.ack,
+            ack_bitmap: self.ack_bitmap,
+            channel_sequence: self.channel_sequence,
+            payload_size: self.payload_size,
         }
     }
 }
@@ -284,6 +305,45 @@ impl EntServer {
     pub fn set_reassembly_timeout(&self, timeout_us: i64) {
         unsafe { ent_server_set_reassembly_timeout(self.inner, timeout_us) }
     }
+
+    // ── Coalescing API ──
+
+    /// Send a raw packet (header + payload) to a specific client.
+    /// Used for echoing coalesced packets without unpack/repack overhead.
+    pub fn send_raw_to(&self, header: &mut EntPacketHeader, payload: &[u8], dest: EntEndpoint) -> EntResult<()> {
+        let mut raw_hdr = header.to_raw();
+        let ret = unsafe {
+            ent_server_send_raw_to(
+                self.inner,
+                &mut raw_hdr,
+                payload.as_ptr() as *const std::ffi::c_void,
+                dest.into(),
+            )
+        };
+        // Update header from result (sequence/ack may be filled)
+        *header = EntPacketHeader::from(&raw_hdr);
+        check_err(ret)?;
+        Ok(())
+    }
+
+    /// Register callback for bulk coalesced data received from a client.
+    /// The raw_payload contains wire format `[len:u16][data]...`.
+    /// message_count is the number of sub-messages in the packet.
+    pub fn set_on_coalesced_data<F>(&self, callback: F)
+    where F: Fn(&EntPacketHeader, &[u8], i32, EntEndpoint) + Send + Sync + 'static
+    {
+        let raw = Box::into_raw(Box::new(
+            Box::new(callback) as Box<dyn Fn(&EntPacketHeader, &[u8], i32, EntEndpoint) + Send + Sync>
+        ));
+        unsafe { ent_server_set_on_coalesced_data(self.inner, Some(srv_coalesced_data_cb), raw as *mut _); }
+        self._callbacks.lock().unwrap().push(unsafe { Box::from_raw(raw) });
+    }
+
+    /// Flush pending coalesced messages for a specific client.
+    pub fn flush_coalesce(&self, dest: EntEndpoint) {
+        unsafe { ent_server_flush_coalesce(self.inner, dest.into()) }
+    }
+
     // ── Fragment reassembly callback setters ──
 
     pub fn set_on_allocate_message<F>(&self, callback: F)
@@ -357,6 +417,17 @@ unsafe extern "C" fn srv_lost_cb(
 }
 
 
+
+unsafe extern "C" fn srv_coalesced_data_cb(
+    header: *const ent_packet_header, raw_payload: *const u8,
+    payload_size: usize, message_count: i32, sender: ent_endpoint,
+    user_data: *mut std::ffi::c_void,
+) {
+    let cb = &**(user_data as *const Box<dyn Fn(&EntPacketHeader, &[u8], i32, EntEndpoint) + Send + Sync>);
+    let hdr = EntPacketHeader::from(&*header);
+    let data = std::slice::from_raw_parts(raw_payload, payload_size);
+    cb(&hdr, data, message_count, sender.into());
+}
 
 unsafe extern "C" fn srv_alloc_msg_cb(
     sender: ent_endpoint, msg_id: u32, ch_id: u8,

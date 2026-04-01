@@ -85,6 +85,18 @@ impl EntClient {
         unsafe { ent_client_set_verbose(self.inner, verbose as i32) }
     }
 
+    pub fn open_channel(&self, mode: u32, priority: u8, name: &str) -> i32 {
+        let c_name = CString::new(name).expect("invalid channel name");
+        unsafe {
+            ent_client_open_channel(
+                self.inner,
+                mode as _,
+                priority,
+                c_name.as_ptr(),
+            )
+        }
+    }
+
     pub fn local_port(&self) -> u16 {
         unsafe { ent_client_local_port(self.inner) }
     }
@@ -158,6 +170,29 @@ impl EntClient {
     pub fn set_reassembly_timeout(&self, timeout_us: i64) {
         unsafe { ent_client_set_reassembly_timeout(self.inner, timeout_us) }
     }
+
+    // ── Coalescing API ──
+
+    /// Flush pending coalesced messages for all channels.
+    pub fn flush_coalesce(&self) {
+        unsafe { ent_client_flush_coalesce(self.inner) }
+    }
+
+    /// Send a raw packet (header + payload).
+    pub fn send_raw(&self, header: &mut EntPacketHeader, payload: &[u8]) -> EntResult<()> {
+        let mut raw_hdr = header.to_raw();
+        let ret = unsafe {
+            ent_client_send_raw(
+                self.inner,
+                &mut raw_hdr,
+                payload.as_ptr() as *const std::ffi::c_void,
+            )
+        };
+        *header = EntPacketHeader::from(&raw_hdr);
+        check_err(ret)?;
+        Ok(())
+    }
+
     // ── Fragment reassembly callback setters ──
 
     pub fn set_on_allocate_message<F>(&self, callback: F)

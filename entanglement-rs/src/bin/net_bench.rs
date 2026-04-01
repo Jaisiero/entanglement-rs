@@ -44,6 +44,18 @@ impl SrvHandle {
         };
         ret >= 0
     }
+    fn echo_raw(&self, hdr: &EntPacketHeader, payload: &[u8], sender: EntEndpoint) -> bool {
+        let mut raw_hdr = hdr.to_raw();
+        let ret = unsafe {
+            entanglement_sys::ent_server_send_raw_to(
+                self.0 as *mut entanglement_sys::ent_server_t,
+                &mut raw_hdr,
+                payload.as_ptr() as *const std::ffi::c_void,
+                entanglement_sys::ent_endpoint { address: sender.address, port: sender.port },
+            )
+        };
+        ret >= 0
+    }
 }
 
 struct Stats {
@@ -53,9 +65,9 @@ struct Stats {
     echoes: AtomicU64,
 }
 
-fn run_server(port: u16, workers: i32) {
+fn run_server(port: u16, workers: i32, sockets: i32) {
     println!("=== NET BENCH SERVER ===");
-    println!("  Port: {}  Workers: {}", port, workers);
+    println!("  Port: {}  Workers: {}  Sockets: {}  AsyncIO: on", port, workers, sockets);
     println!("  Press Ctrl+C to stop\n");
 
     let stats = Arc::new(Stats {
@@ -65,6 +77,8 @@ fn run_server(port: u16, workers: i32) {
 
     let server = EntServer::new(port, "0.0.0.0");
     server.set_worker_count(workers);
+    server.set_use_async_io(true);
+    server.set_socket_count(sockets);
     server.register_default_channels();
     server.enable_auto_retransmit();
 
@@ -76,6 +90,17 @@ fn run_server(port: u16, workers: i32) {
         sr.recv.fetch_add(1, Ordering::Relaxed);
         if h.echo(payload.as_ptr(), payload.len(), hdr.channel_id, sender) {
             se.echo.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+
+    // Bulk coalesced echo: echo the entire coalesced packet raw
+    let h_coal = SrvHandle::from_server(&server);
+    let sr_coal = stats.clone();
+    let se_coal = stats.clone();
+    server.set_on_coalesced_data(move |hdr, raw_payload, message_count, sender| {
+        sr_coal.recv.fetch_add(message_count as u64, Ordering::Relaxed);
+        if h_coal.echo_raw(hdr, raw_payload, sender) {
+            se_coal.echo.fetch_add(message_count as u64, Ordering::Relaxed);
         }
     });
 
@@ -128,10 +153,11 @@ fn run_server(port: u16, workers: i32) {
     }
 }
 
-fn run_client(server_ip: &str, port: u16, num_clients: usize, duration_secs: u64, payload_size: usize, burst: usize) {
+fn run_client(server_ip: &str, port: u16, num_clients: usize, duration_secs: u64, payload_size: usize, burst: usize, coalesced: bool) {
+    let send_channel: u8 = if coalesced { 4 } else { 1 };
     println!("=== NET BENCH CLIENT ===");
     println!("  Server: {}:{}  Clients: {}  Duration: {}s", server_ip, port, num_clients, duration_secs);
-    println!("  Payload: {}B  Burst: {}", payload_size, burst);
+    println!("  Payload: {}B  Burst: {}  Coalesced: {}", payload_size, burst, if coalesced { "YES" } else { "NO" });
     println!("=============================================\n");
 
     let stats = Arc::new(Stats {
@@ -148,6 +174,7 @@ fn run_client(server_ip: &str, port: u16, num_clients: usize, duration_secs: u64
         let ip = server_ip.to_string();
         let psz = payload_size;
         let bst = burst;
+        let ch = send_channel;
 
         client_threads.push(std::thread::spawn(move || {
             let client = EntClient::new(&ip, port);
@@ -203,7 +230,7 @@ fn run_client(server_ip: &str, port: u16, num_clients: usize, duration_secs: u64
                 if client.can_send() {
                     for _ in 0..bst {
                         if !client.can_send() { break; }
-                        if client.send(&buf, 1, 0).is_ok() {
+                        if client.send(&buf, ch, 0).is_ok() {
                             stats_c.sent.fetch_add(1, Ordering::Relaxed);
                         }
                     }
@@ -264,8 +291,9 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!("Usage:");
-        eprintln!("  net_bench server [port] [workers]");
-        eprintln!("  net_bench client <server_ip> [port] [clients] [duration] [payload] [burst]");
+        eprintln!("  net_bench server [port] [workers] [sockets]");
+        eprintln!("  net_bench client <server_ip> [port] [clients] [duration] [payload] [burst] [coalesced]");
+        eprintln!("  coalesced: 0 or 1 (default 0) — use coalesced channel");
         std::process::exit(1);
     }
 
@@ -273,7 +301,8 @@ fn main() {
         "server" => {
             let port: u16 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(19877);
             let workers: i32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(4);
-            run_server(port, workers);
+            let sockets: i32 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(4);
+            run_server(port, workers, sockets);
         }
         "client" => {
             let ip = args.get(2).map(|s| s.as_str()).unwrap_or("127.0.0.1");
@@ -282,7 +311,8 @@ fn main() {
             let duration: u64 = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(10);
             let payload: usize = args.get(6).and_then(|s| s.parse().ok()).unwrap_or(1100);
             let burst: usize = args.get(7).and_then(|s| s.parse().ok()).unwrap_or(32);
-            run_client(ip, port, clients, duration, payload, burst);
+            let coalesced: bool = args.get(8).and_then(|s| s.parse::<i32>().ok()).unwrap_or(0) != 0;
+            run_client(ip, port, clients, duration, payload, burst, coalesced);
         }
         _ => {
             eprintln!("Unknown mode: {}. Use 'server' or 'client'", args[1]);
