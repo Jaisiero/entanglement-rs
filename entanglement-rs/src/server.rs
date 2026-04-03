@@ -242,6 +242,59 @@ impl EntServer {
         unsafe { ent_server_port(self.inner) }
     }
 
+    // ── Worker direct-send API ──
+
+    /// Pause all worker threads. Blocks until every worker has stopped.
+    /// While paused, `worker_send_to()` may be called with exclusive
+    /// access per worker_idx.
+    pub fn pause_workers(&self) {
+        unsafe { ent_server_pause_workers(self.inner) }
+    }
+
+    /// Resume all worker threads after a pause.
+    pub fn resume_workers(&self) {
+        unsafe { ent_server_resume_workers(self.inner) }
+    }
+
+    /// Direct send through a specific worker — bypasses MPSC queue and send_pool.
+    ///
+    /// # Safety contract
+    /// - Workers MUST be paused via `pause_workers()`.
+    /// - Only ONE thread may call this per `worker_idx` at a time.
+    pub fn worker_send_to(
+        &self,
+        worker_idx: usize,
+        data: &[u8],
+        channel_id: u8,
+        dest: EntEndpoint,
+        flags: u8,
+    ) -> EntResult<u32> {
+        let raw_dest = ent_endpoint { address: dest.address, port: dest.port };
+        let ret = unsafe {
+            ent_server_worker_send_to(
+                self.inner,
+                worker_idx,
+                data.as_ptr() as *const _,
+                data.len(),
+                channel_id,
+                raw_dest,
+                flags,
+            )
+        };
+        check_err(ret).map(|n| n as u32)
+    }
+
+    /// Returns which worker index owns a given endpoint.
+    pub fn worker_index(&self, dest: EntEndpoint) -> usize {
+        let raw_dest = ent_endpoint { address: dest.address, port: dest.port };
+        unsafe { ent_server_worker_index(self.inner, raw_dest) }
+    }
+
+    /// Returns the number of active workers.
+    pub fn worker_count(&self) -> i32 {
+        unsafe { ent_server_worker_count(self.inner) }
+    }
+
     // ── Closure-based callback setters ──
 
     pub fn set_on_client_data<F>(&self, callback: F)
