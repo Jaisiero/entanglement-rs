@@ -183,6 +183,12 @@ impl EntServer {
         unsafe { ent_server_update(self.inner) }
     }
 
+    /// Advance the double-buffered send pool. Call once per tick before
+    /// any cross-thread sends (broadcast phase).
+    pub fn advance_send_pool(&self) {
+        unsafe { ent_server_advance_send_pool(self.inner) }
+    }
+
     pub fn send_to(&self, data: &[u8], channel_id: u8, dest: EntEndpoint, flags: u8) -> EntResult<u32> {
         let mut msg_id: u32 = 0;
         let ret = unsafe {
