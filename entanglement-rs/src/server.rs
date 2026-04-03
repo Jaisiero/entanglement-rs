@@ -284,6 +284,47 @@ impl EntServer {
         check_err(ret).map(|n| n as u32)
     }
 
+    /// Send multiple payloads to the same destination via UDP GSO (one syscall).
+    ///
+    /// # Safety contract
+    /// - Workers MUST be paused via `pause_workers()`.
+    /// - Only ONE thread may call this per `worker_idx` at a time.
+    pub fn worker_send_to_multi(
+        &self,
+        worker_idx: usize,
+        payloads: &[&[u8]],
+        channel_id: u8,
+        dest: EntEndpoint,
+        flags: u8,
+    ) -> EntResult<u32> {
+        if payloads.is_empty() {
+            return Ok(0);
+        }
+        const MAX_GSO_PAYLOADS: usize = 64;
+        assert!(payloads.len() <= MAX_GSO_PAYLOADS);
+
+        let raw_dest = ent_endpoint { address: dest.address, port: dest.port };
+        let mut ptrs = [std::ptr::null() as *const std::ffi::c_void; MAX_GSO_PAYLOADS];
+        let mut sizes = [0u16; MAX_GSO_PAYLOADS];
+        for (i, p) in payloads.iter().enumerate() {
+            ptrs[i] = p.as_ptr() as *const std::ffi::c_void;
+            sizes[i] = p.len() as u16;
+        }
+        let ret = unsafe {
+            ent_server_worker_send_to_multi(
+                self.inner,
+                worker_idx,
+                ptrs.as_ptr(),
+                sizes.as_ptr(),
+                payloads.len() as u32,
+                channel_id,
+                raw_dest,
+                flags,
+            )
+        };
+        check_err(ret).map(|n| n as u32)
+    }
+
     /// Begin sendmmsg batching on a worker's send socket.
     /// Call before a burst of `worker_send_to`, then `worker_flush_send_batch`.
     /// Reduces syscalls from N to N/256.
