@@ -284,6 +284,21 @@ impl EntServer {
         check_err(ret).map(|n| n as u32)
     }
 
+    /// Begin sendmmsg batching on a worker's send socket.
+    /// Call before a burst of `worker_send_to`, then `worker_flush_send_batch`.
+    /// Reduces syscalls from N to N/256.
+    ///
+    /// # Safety contract
+    /// - Workers MUST be paused via `pause_workers()`.
+    pub fn worker_begin_send_batch(&self, worker_idx: usize) {
+        unsafe { ent_server_worker_begin_send_batch(self.inner, worker_idx) }
+    }
+
+    /// Flush sendmmsg batch on a worker's send socket.
+    pub fn worker_flush_send_batch(&self, worker_idx: usize) {
+        unsafe { ent_server_worker_flush_send_batch(self.inner, worker_idx) }
+    }
+
     /// Returns which worker index owns a given endpoint.
     pub fn worker_index(&self, dest: EntEndpoint) -> usize {
         let raw_dest = ent_endpoint { address: dest.address, port: dest.port };
