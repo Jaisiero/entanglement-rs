@@ -30,15 +30,40 @@ fn main() {
         println!("cargo:rustc-link-lib=ws2_32");
     }
 
+    let mut has_uring = false;
+
+    if cfg!(target_os = "linux") {
+        build.define("_GNU_SOURCE", None);
+        // io_uring batched GSO sends
+        if std::process::Command::new("pkg-config")
+            .args(["--exists", "liburing"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            has_uring = true;
+            build.define("ENTANGLEMENT_HAS_URING", None);
+            println!("cargo:rustc-link-lib=uring");
+        }
+    }
+
     build.compile("entanglement");
 
     // Generate bindings with bindgen
     let header = include_dir.join("entanglement.h");
-    let bindings = bindgen::Builder::default()
+    let mut bindgen_builder = bindgen::Builder::default()
         .header(header.to_str().unwrap())
+        .clang_arg(format!("-I{}", include_dir.display()))
+        .clang_arg(format!("-I{}", src_dir.display()))
         .allowlist_type("ent_.*")
         .allowlist_function("ent_.*")
-        .allowlist_var("ENT_.*")
+        .allowlist_var("ENT_.*");
+
+    if has_uring {
+        bindgen_builder = bindgen_builder.clang_arg("-DENTANGLEMENT_HAS_URING");
+    }
+
+    let bindings = bindgen_builder
         .generate()
         .expect("Failed to generate bindings");
 
