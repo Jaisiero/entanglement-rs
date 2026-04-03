@@ -340,28 +340,6 @@ impl EntServer {
         unsafe { ent_server_worker_flush_send_batch(self.inner, worker_idx) }
     }
 
-    /// Initialize io_uring batched GSO sends on a worker's send socket.
-    /// Falls back to normal sendmsg if io_uring is not available.
-    pub fn worker_init_uring(&self, worker_idx: usize) {
-        // ent_server_worker_init_uring only exists when compiled with ENTANGLEMENT_HAS_URING.
-        // bindgen generates it conditionally; if absent, this is a no-op.
-        #[cfg(target_os = "linux")]
-        unsafe {
-            ent_server_worker_init_uring(self.inner, worker_idx);
-        }
-    }
-
-    /// Flush all pending io_uring GSO sends on a worker's send socket.
-    /// Returns number of completed sends.
-    pub fn worker_flush_uring(&self, worker_idx: usize) -> i32 {
-        #[cfg(target_os = "linux")]
-        {
-            return unsafe { ent_server_worker_flush_uring(self.inner, worker_idx) };
-        }
-        #[cfg(not(target_os = "linux"))]
-        { let _ = worker_idx; 0 }
-    }
-
     /// Returns which worker index owns a given endpoint.
     pub fn worker_index(&self, dest: EntEndpoint) -> usize {
         let raw_dest = ent_endpoint { address: dest.address, port: dest.port };
