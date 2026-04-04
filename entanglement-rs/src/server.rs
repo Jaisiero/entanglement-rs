@@ -6,6 +6,9 @@ use crate::error::{check_err, EntResult};
 
 // ── Value types ──
 
+/// Size of the C++ packet_header (must match ENT_PACKET_HEADER_SIZE).
+pub const PACKET_HEADER_SIZE: usize = 34;
+
 #[derive(Debug, Clone, Copy)]
 pub struct EntEndpoint {
     pub address: u32,
@@ -325,7 +328,50 @@ impl EntServer {
         check_err(ret).map(|n| n as u32)
     }
 
-    /// Begin sendmmsg batching on a worker's send socket.
+    /// Returns raw pointer to the per-worker GSO builder buffer.
+    /// Layout: segment N payload starts at `N * (PACKET_HEADER_SIZE + max_payload) + PACKET_HEADER_SIZE`.
+    ///
+    /// # Safety contract
+    /// - Workers MUST be paused via `pause_workers()`.
+    /// - Only ONE thread may use the buffer per `worker_idx` at a time.
+    pub fn gso_buf_ptr(&self, worker_idx: usize) -> *mut u8 {
+        unsafe { ent_server_gso_buf(self.inner, worker_idx) }
+    }
+
+    /// Flush the GSO builder: C++ fills packet headers in-place, pads segments,
+    /// and sends via GSO sendmsg.  Payloads must already be written at the correct
+    /// offsets in the buffer returned by `gso_buf_ptr()`.
+    ///
+    /// # Safety contract
+    /// - Workers MUST be paused via `pause_workers()`.
+    /// - Only ONE thread may call this per `worker_idx` at a time.
+    pub fn gso_send(
+        &self,
+        worker_idx: usize,
+        payload_sizes: &[u16],
+        max_payload: u16,
+        channel_id: u8,
+        dest: EntEndpoint,
+        flags: u8,
+    ) -> EntResult<u32> {
+        if payload_sizes.is_empty() {
+            return Ok(0);
+        }
+        let raw_dest = ent_endpoint { address: dest.address, port: dest.port };
+        let ret = unsafe {
+            ent_server_gso_send(
+                self.inner,
+                worker_idx,
+                payload_sizes.len() as u32,
+                payload_sizes.as_ptr(),
+                max_payload,
+                channel_id,
+                raw_dest,
+                flags,
+            )
+        };
+        check_err(ret).map(|n| n as u32)
+    }
     /// Call before a burst of `worker_send_to`, then `worker_flush_send_batch`.
     /// Reduces syscalls from N to N/256.
     ///
