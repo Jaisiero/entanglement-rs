@@ -341,6 +341,7 @@ impl EntServer {
     /// Flush the GSO builder: C++ fills packet headers in-place, pads segments,
     /// and sends via GSO sendmsg.  Payloads must already be written at the correct
     /// offsets in the buffer returned by `gso_buf_ptr()`.
+    /// In batch mode (after `gso_batch_begin`), queues instead of sending.
     ///
     /// # Safety contract
     /// - Workers MUST be paused via `pause_workers()`.
@@ -372,6 +373,23 @@ impl EntServer {
         };
         check_err(ret).map(|n| n as u32)
     }
+
+    /// Begin GSO sendmmsg batching: subsequent `gso_send` calls queue instead
+    /// of sending. Call `gso_batch_flush` to send all queued buffers via one
+    /// `sendmmsg()` syscall.
+    ///
+    /// # Safety contract
+    /// - Workers MUST be paused via `pause_workers()`.
+    pub fn gso_batch_begin(&self, worker_idx: usize) {
+        unsafe { ent_server_gso_batch_begin(self.inner, worker_idx) }
+    }
+
+    /// Flush all queued GSO sends via a single sendmmsg() syscall.
+    /// Returns number of messages sent.
+    pub fn gso_batch_flush(&self, worker_idx: usize) -> i32 {
+        unsafe { ent_server_gso_batch_flush(self.inner, worker_idx) }
+    }
+
     /// Call before a burst of `worker_send_to`, then `worker_flush_send_batch`.
     /// Reduces syscalls from N to N/256.
     ///
