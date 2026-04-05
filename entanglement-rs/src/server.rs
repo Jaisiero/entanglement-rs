@@ -390,6 +390,23 @@ impl EntServer {
         unsafe { ent_server_gso_batch_flush(self.inner, worker_idx) }
     }
 
+    /// Initialize AF_XDP TX kernel bypass for the given network interface.
+    /// Returns 0 on success. On failure, the server continues using sendmsg.
+    pub fn xdp_tx_init(&self, iface: &str) -> i32 {
+        let c_iface = std::ffi::CString::new(iface).unwrap();
+        unsafe { ent_server_xdp_tx_init(self.inner, c_iface.as_ptr()) }
+    }
+
+    /// Flush AF_XDP TX ring for a worker. Call once per tick after all sends.
+    pub fn xdp_tx_flush(&self, worker_idx: usize) {
+        unsafe { ent_server_xdp_tx_flush(self.inner, worker_idx) }
+    }
+
+    /// Cleanup AF_XDP resources. Called automatically on drop/stop.
+    pub fn xdp_tx_cleanup(&self) {
+        unsafe { ent_server_xdp_tx_cleanup(self.inner) }
+    }
+
     /// Call before a burst of `worker_send_to`, then `worker_flush_send_batch`.
     /// Reduces syscalls from N to N/256.
     ///

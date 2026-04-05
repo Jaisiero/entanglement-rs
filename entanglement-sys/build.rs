@@ -30,6 +30,12 @@ fn main() {
         println!("cargo:rustc-link-lib=ws2_32");
     }
 
+    // On Linux, link libbpf and libxdp for AF_XDP support
+    if cfg!(target_os = "linux") {
+        println!("cargo:rustc-link-lib=bpf");
+        println!("cargo:rustc-link-lib=xdp");
+    }
+
     build.compile("entanglement");
 
     // Generate bindings with bindgen
