@@ -485,6 +485,10 @@ impl EntServer {
         unsafe { ent_server_set_reassembly_timeout(self.inner, timeout_us) }
     }
 
+    pub fn set_loss_scan_interval(&self, interval_us: i64) {
+        unsafe { ent_server_set_loss_scan_interval(self.inner, interval_us) }
+    }
+
     // ── Coalescing API ──
 
     /// Send a raw packet (header + payload) to a specific client.
