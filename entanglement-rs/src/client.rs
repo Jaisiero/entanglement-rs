@@ -286,7 +286,27 @@ unsafe extern "C" fn cli_msg_failed_cb(
 
 impl Drop for EntClient {
     fn drop(&mut self) {
-        unsafe { ent_client_destroy(self.inner) }
+        // SAFETY: `_callbacks` owns the heap allocations that C currently
+        // holds raw `user_data` pointers to. The struct-field drop order
+        // guarantees `_callbacks` drops AFTER this `drop()` body returns,
+        // which means any callback fired during `ent_client_destroy` would
+        // still find valid user_data. However, if the underlying C lib
+        // defers callback firing to another thread (or leaves dangling
+        // references in internal state), a UAF is possible once
+        // `_callbacks` drops. Clear every C callback to None+null *before*
+        // destroy so the C side cannot dereference our boxed closures
+        // again, then let `_callbacks` drop as normal.
+        unsafe {
+            ent_client_set_on_data_received(self.inner, None, std::ptr::null_mut());
+            ent_client_set_on_connected(self.inner, None, std::ptr::null_mut());
+            ent_client_set_on_disconnected(self.inner, None, std::ptr::null_mut());
+            ent_client_set_on_packet_lost(self.inner, None, std::ptr::null_mut());
+            ent_client_set_on_allocate_message(self.inner, None, std::ptr::null_mut());
+            ent_client_set_on_message_complete(self.inner, None, std::ptr::null_mut());
+            ent_client_set_on_message_failed(self.inner, None, std::ptr::null_mut());
+            ent_client_set_on_message_acked(self.inner, None, std::ptr::null_mut());
+            ent_client_destroy(self.inner);
+        }
     }
 }
 

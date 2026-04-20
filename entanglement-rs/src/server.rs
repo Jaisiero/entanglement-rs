@@ -656,7 +656,25 @@ unsafe extern "C" fn srv_msg_failed_cb(
 
 impl Drop for EntServer {
     fn drop(&mut self) {
-        unsafe { ent_server_destroy(self.inner) }
+        // SAFETY: `_callbacks` owns the heap allocations that C currently
+        // holds raw `user_data` pointers to. The struct-field drop order
+        // guarantees `_callbacks` drops AFTER this `drop()` body returns,
+        // but any lingering C-side reference past that point would be a
+        // use-after-free. Clear every C callback to None+null *before*
+        // destroy so the C side cannot dereference our boxed closures
+        // again, then let `_callbacks` drop as normal.
+        unsafe {
+            ent_server_set_on_client_data(self.inner, None, std::ptr::null_mut());
+            ent_server_set_on_coalesced_data(self.inner, None, std::ptr::null_mut());
+            ent_server_set_on_client_connected(self.inner, None, std::ptr::null_mut());
+            ent_server_set_on_client_disconnected(self.inner, None, std::ptr::null_mut());
+            ent_server_set_on_channel_requested(self.inner, None, std::ptr::null_mut());
+            ent_server_set_on_packet_lost(self.inner, None, std::ptr::null_mut());
+            ent_server_set_on_allocate_message(self.inner, None, std::ptr::null_mut());
+            ent_server_set_on_message_complete(self.inner, None, std::ptr::null_mut());
+            ent_server_set_on_message_failed(self.inner, None, std::ptr::null_mut());
+            ent_server_destroy(self.inner);
+        }
     }
 }
 
