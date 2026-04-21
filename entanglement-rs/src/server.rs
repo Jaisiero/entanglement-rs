@@ -247,6 +247,24 @@ impl EntServer {
 
     // ── Worker direct-send API ──
 
+    /// Dispatch a task to all worker threads (thread fusion).
+    /// Each C++ worker calls `task(contexts[worker_idx], worker_idx)`.
+    /// Blocks until all workers complete. Workers have native access
+    /// to their own GSO buffers and send sockets — no pause needed.
+    pub fn dispatch_to_workers(
+        &self,
+        task: extern "C" fn(*mut std::ffi::c_void, i32),
+        contexts: &mut [*mut std::ffi::c_void],
+    ) {
+        unsafe {
+            ent_server_dispatch_to_workers(
+                self.inner,
+                Some(task),
+                contexts.as_mut_ptr(),
+            )
+        }
+    }
+
     /// Pause all worker threads. Blocks until every worker has stopped.
     /// While paused, `worker_send_to()` may be called with exclusive
     /// access per worker_idx.
