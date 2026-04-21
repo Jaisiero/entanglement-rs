@@ -103,44 +103,62 @@ impl EntClient {
 
     // ── Closure-based callback setters ──
 
+    /// Box `trampoline` on the heap, keep ownership alive inside `_callbacks`,
+    /// and return a stable raw pointer suitable for hand-off to C as
+    /// `user_data`.
+    ///
+    /// Previously this was written as
+    /// `Box::into_raw(..)` + `Box::from_raw(raw)` on the same pointer, which
+    /// round-trips ownership through the raw pointer (into_raw surrenders,
+    /// from_raw reclaims — net zero). That idiom is safe but easy to
+    /// misread as a potential double-free/UAF (CRIT #10). Here ownership
+    /// never leaves Rust: `_callbacks` holds the `Box` from the start, and
+    /// C simply receives the heap address of its contents. `Box`
+    /// allocations never relocate, so the pointer stays valid for the
+    /// lifetime of the `EntClient`. `Drop` tears down C callbacks (None +
+    /// null) before `_callbacks` is freed, so C cannot dereference
+    /// dangling user_data.
+    fn store_callback<T: Send + Sync + 'static>(&self, trampoline: T) -> *mut std::ffi::c_void {
+        let boxed: Box<T> = Box::new(trampoline);
+        // SAFETY: &*boxed is a reference to the heap allocation holding `T`.
+        // That address is stable as long as `boxed` (moved into `_callbacks`
+        // below) is alive. The cast to *mut c_void matches the FFI signature
+        // of the C-side callback setters.
+        let raw: *mut std::ffi::c_void = &*boxed as *const T as *mut _;
+        self._callbacks.lock().unwrap().push(boxed);
+        raw
+    }
+
     pub fn set_on_data_received<F>(&self, callback: F)
     where F: Fn(&EntPacketHeader, &[u8]) + Send + Sync + 'static
     {
-        let raw = Box::into_raw(Box::new(
-            Box::new(callback) as Box<dyn Fn(&EntPacketHeader, &[u8]) + Send + Sync>
-        ));
-        unsafe { ent_client_set_on_data_received(self.inner, Some(cli_data_cb), raw as *mut _); }
-        self._callbacks.lock().unwrap().push(unsafe { Box::from_raw(raw) });
+        let trampoline: Box<dyn Fn(&EntPacketHeader, &[u8]) + Send + Sync> = Box::new(callback);
+        let raw = self.store_callback(trampoline);
+        unsafe { ent_client_set_on_data_received(self.inner, Some(cli_data_cb), raw); }
     }
 
     pub fn set_on_connected<F>(&self, callback: F)
     where F: Fn() + Send + Sync + 'static
     {
-        let raw = Box::into_raw(Box::new(
-            Box::new(callback) as Box<dyn Fn() + Send + Sync>
-        ));
-        unsafe { ent_client_set_on_connected(self.inner, Some(cli_connected_cb), raw as *mut _); }
-        self._callbacks.lock().unwrap().push(unsafe { Box::from_raw(raw) });
+        let trampoline: Box<dyn Fn() + Send + Sync> = Box::new(callback);
+        let raw = self.store_callback(trampoline);
+        unsafe { ent_client_set_on_connected(self.inner, Some(cli_connected_cb), raw); }
     }
 
     pub fn set_on_disconnected<F>(&self, callback: F)
     where F: Fn() + Send + Sync + 'static
     {
-        let raw = Box::into_raw(Box::new(
-            Box::new(callback) as Box<dyn Fn() + Send + Sync>
-        ));
-        unsafe { ent_client_set_on_disconnected(self.inner, Some(cli_disconnected_cb), raw as *mut _); }
-        self._callbacks.lock().unwrap().push(unsafe { Box::from_raw(raw) });
+        let trampoline: Box<dyn Fn() + Send + Sync> = Box::new(callback);
+        let raw = self.store_callback(trampoline);
+        unsafe { ent_client_set_on_disconnected(self.inner, Some(cli_disconnected_cb), raw); }
     }
 
     pub fn set_on_packet_lost<F>(&self, callback: F)
     where F: Fn(&EntLostPacketInfo) + Send + Sync + 'static
     {
-        let raw = Box::into_raw(Box::new(
-            Box::new(callback) as Box<dyn Fn(&EntLostPacketInfo) + Send + Sync>
-        ));
-        unsafe { ent_client_set_on_packet_lost(self.inner, Some(cli_lost_cb), raw as *mut _); }
-        self._callbacks.lock().unwrap().push(unsafe { Box::from_raw(raw) });
+        let trampoline: Box<dyn Fn(&EntLostPacketInfo) + Send + Sync> = Box::new(callback);
+        let raw = self.store_callback(trampoline);
+        unsafe { ent_client_set_on_packet_lost(self.inner, Some(cli_lost_cb), raw); }
     }
 
     // ── Additional methods ──
@@ -198,31 +216,28 @@ impl EntClient {
     pub fn set_on_allocate_message<F>(&self, callback: F)
     where F: Fn(EntEndpoint, u32, u8, u8, usize) -> *mut u8 + Send + Sync + 'static
     {
-        let raw = Box::into_raw(Box::new(
-            Box::new(callback) as Box<dyn Fn(EntEndpoint, u32, u8, u8, usize) -> *mut u8 + Send + Sync>
-        ));
-        unsafe { ent_client_set_on_allocate_message(self.inner, Some(cli_alloc_msg_cb), raw as *mut _); }
-        self._callbacks.lock().unwrap().push(unsafe { Box::from_raw(raw) });
+        let trampoline: Box<dyn Fn(EntEndpoint, u32, u8, u8, usize) -> *mut u8 + Send + Sync> =
+            Box::new(callback);
+        let raw = self.store_callback(trampoline);
+        unsafe { ent_client_set_on_allocate_message(self.inner, Some(cli_alloc_msg_cb), raw); }
     }
 
     pub fn set_on_message_complete<F>(&self, callback: F)
     where F: Fn(EntEndpoint, u32, u8, *mut u8, usize) + Send + Sync + 'static
     {
-        let raw = Box::into_raw(Box::new(
-            Box::new(callback) as Box<dyn Fn(EntEndpoint, u32, u8, *mut u8, usize) + Send + Sync>
-        ));
-        unsafe { ent_client_set_on_message_complete(self.inner, Some(cli_msg_complete_cb), raw as *mut _); }
-        self._callbacks.lock().unwrap().push(unsafe { Box::from_raw(raw) });
+        let trampoline: Box<dyn Fn(EntEndpoint, u32, u8, *mut u8, usize) + Send + Sync> =
+            Box::new(callback);
+        let raw = self.store_callback(trampoline);
+        unsafe { ent_client_set_on_message_complete(self.inner, Some(cli_msg_complete_cb), raw); }
     }
 
     pub fn set_on_message_failed<F>(&self, callback: F)
     where F: Fn(EntEndpoint, u32, u8, *mut u8) + Send + Sync + 'static
     {
-        let raw = Box::into_raw(Box::new(
-            Box::new(callback) as Box<dyn Fn(EntEndpoint, u32, u8, *mut u8) + Send + Sync>
-        ));
-        unsafe { ent_client_set_on_message_failed(self.inner, Some(cli_msg_failed_cb), raw as *mut _); }
-        self._callbacks.lock().unwrap().push(unsafe { Box::from_raw(raw) });
+        let trampoline: Box<dyn Fn(EntEndpoint, u32, u8, *mut u8) + Send + Sync> =
+            Box::new(callback);
+        let raw = self.store_callback(trampoline);
+        unsafe { ent_client_set_on_message_failed(self.inner, Some(cli_msg_failed_cb), raw); }
     }
 
 }
