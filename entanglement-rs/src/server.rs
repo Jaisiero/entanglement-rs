@@ -209,6 +209,30 @@ impl EntServer {
         Ok(msg_id)
     }
 
+    /// Priority send (Option B, 2026-05-11). Same as `send_to` but the
+    /// cross-thread path enqueues to the worker's priority MPSC queue
+    /// instead of the regular one. The priority queue is drained at
+    /// twice the cadence of the regular queue in the worker's poll_local,
+    /// so latency-sensitive replies (HANDOFF_AUTH→SessionOpen,
+    /// INTERSHARD acknowledgements) bypass the regular queue tail under
+    /// a recv burst. Use sparingly to avoid starving normal traffic.
+    pub fn send_to_priority(&self, data: &[u8], channel_id: u8, dest: EntEndpoint, flags: u8) -> EntResult<u32> {
+        let mut msg_id: u32 = 0;
+        let ret = unsafe {
+            ent_server_send_to_priority(
+                self.inner,
+                data.as_ptr() as *const std::ffi::c_void,
+                data.len(),
+                channel_id,
+                dest.into(),
+                flags,
+                &mut msg_id,
+            )
+        };
+        check_err(ret)?;
+        Ok(msg_id)
+    }
+
     pub fn disconnect_client(&self, key: EntEndpoint) {
         unsafe { ent_server_disconnect_client(self.inner, key.into()) }
     }
