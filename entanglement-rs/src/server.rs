@@ -9,6 +9,23 @@ use crate::error::{check_err, EntResult};
 /// Size of the C++ packet_header (must match ENT_PACKET_HEADER_SIZE).
 pub const PACKET_HEADER_SIZE: usize = 34;
 
+// Packet header flags — mirrored from C++ `enum packet_flags` in
+// packet_header.h. Kept in sync manually because the C++ enum isn't
+// reachable by bindgen (it's a strong enum embedded in the namespace).
+pub const FLAG_NONE:        u8 = 0;
+pub const FLAG_FRAGMENT:    u8 = 1 << 0;
+pub const FLAG_CONTROL:     u8 = 1 << 1;
+pub const FLAG_COMPRESSED:  u8 = 1 << 2;
+pub const FLAG_SHARD_RELAY: u8 = 1 << 3;
+pub const FLAG_COALESCED:   u8 = 1 << 4;
+/// FLAG_RESET (2026-05-12). Receiver wipes its `udp_connection` state
+/// before processing this packet's sequence — bypasses the
+/// out-of-order check that would otherwise drop it. Sender wipes its
+/// local state before emitting so the wire sequence starts at 1.
+/// Used by socket-pre-warm callers to recover a clean session-state
+/// boundary in a long-lived UDP connection.
+pub const FLAG_RESET:       u8 = 1 << 5;
+
 #[derive(Debug, Clone, Copy)]
 pub struct EntEndpoint {
     pub address: u32,
