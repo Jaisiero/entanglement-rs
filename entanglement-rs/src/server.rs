@@ -233,6 +233,32 @@ impl EntServer {
         Ok(msg_id)
     }
 
+    /// Reset-aware send (FLAG_RESET, 2026-05-12). Wipes our outbound
+    /// udp_connection state for `dest` and tags the packet with
+    /// FLAG_RESET so the receiver wipes its end too. Used by the
+    /// HANDOFF_AUTH handler to send SessionOpen back on an endpoint
+    /// whose previous session was already torn down server-side but
+    /// whose UDP connection state lingered from the prior session.
+    /// Without this, the client's stale ingress sequence state would
+    /// drop the SessionOpen as out-of-order and the session would
+    /// never activate.
+    pub fn send_to_with_reset(&self, data: &[u8], channel_id: u8, dest: EntEndpoint, flags: u8) -> EntResult<u32> {
+        let mut msg_id: u32 = 0;
+        let ret = unsafe {
+            ent_server_send_to_with_reset(
+                self.inner,
+                data.as_ptr() as *const std::ffi::c_void,
+                data.len(),
+                channel_id,
+                dest.into(),
+                flags,
+                &mut msg_id,
+            )
+        };
+        check_err(ret)?;
+        Ok(msg_id)
+    }
+
     pub fn disconnect_client(&self, key: EntEndpoint) {
         unsafe { ent_server_disconnect_client(self.inner, key.into()) }
     }

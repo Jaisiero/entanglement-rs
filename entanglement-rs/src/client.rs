@@ -61,6 +61,35 @@ impl EntClient {
         Ok(msg_id)
     }
 
+    /// Reset-aware send (FLAG_RESET, 2026-05-12). Wipes the C
+    /// `udp_connection` state (sequences, ack bitmap, RTT, fragmentation,
+    /// coalesce, congestion) before sending, and the receiver mirrors
+    /// the wipe when it sees FLAG_RESET in the packet header. Used to
+    /// promote a pre-warmed UDP socket as the live primary session
+    /// without paying the disconnect+reconnect+handshake cost.
+    ///
+    /// The caller is responsible for choosing the right moment: between
+    /// the last packet of the previous session at this destination
+    /// (so no orphaned in-flight packets get acked under the new state)
+    /// and the first packet of the new session (typically HANDOFF_AUTH).
+    pub fn send_with_reset(&self, data: &[u8], channel_id: u8, flags: u8) -> EntResult<u32> {
+        let mut msg_id: u32 = 0;
+        let mut seq: u64 = 0;
+        let ret = unsafe {
+            ent_client_send_with_reset(
+                self.inner,
+                data.as_ptr() as *const std::ffi::c_void,
+                data.len(),
+                channel_id,
+                flags,
+                &mut msg_id,
+                &mut seq,
+            )
+        };
+        check_err(ret)?;
+        Ok(msg_id)
+    }
+
     pub fn poll(&self, max_packets: i32) -> i32 {
         unsafe { ent_client_poll(self.inner, max_packets) }
     }
@@ -330,6 +359,11 @@ impl Drop for EntClient {
 #[derive(Debug)]
 pub enum ClientCommand {
     Send { data: Vec<u8>, channel_id: u8, flags: u8 },
+    /// Reset-aware variant of `Send` (2026-05-12). Wipes the C
+    /// `udp_connection` state and tags the packet with FLAG_RESET so
+    /// the server wipes its end too. See `EntClient::send_with_reset`
+    /// for usage.
+    SendWithReset { data: Vec<u8>, channel_id: u8, flags: u8 },
     Disconnect,
     Stop,
 }
@@ -417,6 +451,9 @@ pub fn spawn_client_with_config(
                 match cmd_rx.try_recv() {
                     Ok(ClientCommand::Send { data, channel_id, flags }) => {
                         let _ = client.send(&data, channel_id, flags);
+                    }
+                    Ok(ClientCommand::SendWithReset { data, channel_id, flags }) => {
+                        let _ = client.send_with_reset(&data, channel_id, flags);
                     }
                     Ok(ClientCommand::Disconnect) => {
                         client.disconnect();
