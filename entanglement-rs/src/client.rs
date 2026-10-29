@@ -130,6 +130,23 @@ impl EntClient {
         unsafe { ent_client_local_port(self.inner) }
     }
 
+    /// Drop datagrams whose source is not this client's server (default ON;
+    /// env `ENTANGLEMENT_CLIENT_SENDER_FILTER=0` disables).
+    pub fn set_sender_filter(&self, enabled: bool) {
+        unsafe { ent_client_set_sender_filter(self.inner, enabled as i32) }
+    }
+
+    /// Datagrams dropped by the sender filter since creation.
+    pub fn foreign_sender_drops(&self) -> u64 {
+        unsafe { ent_client_foreign_sender_drops(self.inner) }
+    }
+
+    /// Bind the ephemeral port without SO_REUSEADDR (default ON; env
+    /// `ENTANGLEMENT_CLIENT_EXCLUSIVE_PORT=0` disables). Applies on the next `connect()`.
+    pub fn set_exclusive_port(&self, enabled: bool) {
+        unsafe { ent_client_set_exclusive_port(self.inner, enabled as i32) }
+    }
+
     // ── Closure-based callback setters ──
 
     /// Box `trampoline` on the heap, keep ownership alive inside `_callbacks`,
