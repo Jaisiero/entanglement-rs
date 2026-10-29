@@ -32,7 +32,7 @@ entanglement-rs/
 
 ```rust
 let client = EntClient::new(config)?;
-client.connect("192.168.1.30:9876").await?;
+client.connect("127.0.0.1:9876").await?;
 client.send(&payload).await?;
 let data = client.recv().await?;
 ```
